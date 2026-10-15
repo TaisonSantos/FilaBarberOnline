@@ -1,0 +1,8 @@
+[functions.create-pix-order]
+verify_jwt = false
+
+[functions.get-pix-status]
+verify_jwt = false
+
+[functions.mercado-pago-webhook]
+verify_jwt = false
