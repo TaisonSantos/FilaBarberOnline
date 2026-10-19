@@ -28,7 +28,7 @@ Deno.serve(async (request) => {
   const webhookSecret = Deno.env.get('MERCADOPAGO_WEBHOOK_SECRET')
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
   const secretKeys = Deno.env.get('SUPABASE_SECRET_KEYS')
-  if (!accessToken || mpMode !== 'test' || !webhookSecret || !supabaseUrl || !secretKeys) return json({ error: 'Webhook not configured' }, 503)
+  if (!accessToken || !['test', 'production'].includes(mpMode ?? '') || !webhookSecret || !supabaseUrl || !secretKeys) return json({ error: 'Webhook not configured' }, 503)
 
   try {
     const url = new URL(request.url)
@@ -53,6 +53,10 @@ Deno.serve(async (request) => {
     }
     const order = await mpResponse.json()
     if (order.id !== dataId || order.type !== 'online') return json({ error: 'Order mismatch' }, 400)
+    // Orders API GET may return country_code (BRA) without currency_id.
+    // The database RPC requires BRL, so derive it only from the verified order.
+    const currencyId = order.currency_id ?? (order.country_code === 'BRA' ? 'BRL' : null)
+    if (currencyId !== 'BRL') return json({ error: 'Order currency is not supported' }, 400)
     const payment = order.transactions?.payments?.find((item: Record<string, any>) => item.payment_method?.id === 'pix')
     if (!payment) return json({ error: 'Pix transaction not found' }, 400)
 
@@ -66,7 +70,7 @@ Deno.serve(async (request) => {
       p_external_reference: order.external_reference,
       p_order_status: order.status,
       p_order_status_detail: order.status_detail,
-      p_currency_id: order.currency_id,
+      p_currency_id: currencyId,
       p_total_amount_cents: cents(order.total_amount),
       p_total_paid_cents: cents(order.total_paid_amount),
       p_payment_method_id: payment.payment_method?.id,

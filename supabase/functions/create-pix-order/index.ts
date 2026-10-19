@@ -89,7 +89,7 @@ Deno.serve(async (request) => {
 
   if (
     !mpToken ||
-    mpMode !== 'test' ||
+    !['test', 'production'].includes(mpMode ?? '') ||
     !rateLimitSecret ||
     !supabaseUrl ||
     !supabaseSecretKeys
@@ -270,6 +270,7 @@ Deno.serve(async (request) => {
             },
             payer: {
               email: normalizedEmail,
+              first_name: normalizedName.split(/\s+/)[0],
             },
           }),
           signal: AbortSignal.timeout(15000),
