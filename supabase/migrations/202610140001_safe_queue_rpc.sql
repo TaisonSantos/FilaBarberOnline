@@ -7,7 +7,7 @@ returns table (
   display_name text,
   service_name text,
   status text,
-  position bigint,
+  "position" bigint,
   people_ahead bigint,
   estimated_wait_minutes integer,
   started_at timestamptz
@@ -79,7 +79,7 @@ as $$
 declare
   v_queue jsonb;
 begin
-  select coalesce(jsonb_agg(to_jsonb(q) order by q.position), '[]'::jsonb)
+  select coalesce(jsonb_agg(to_jsonb(q) order by q."position"), '[]'::jsonb)
     into v_queue
   from public.get_public_queue() q;
 

@@ -26,6 +26,30 @@ export async function fetchActiveServices() {
   return data ?? []
 }
 
+export async function fetchPublicBusinessHours() {
+  const client = requireSupabase()
+  const { data, error } = await client.rpc('get_public_business_hours')
+  if (error) throw error
+  return data ?? []
+}
+
+export async function fetchAdminControls() {
+  const client = requireSupabase()
+  const { data, error } = await client.rpc('admin_get_controls')
+  if (error) throw error
+  return data
+}
+
+export async function saveAdminControls({ hours, services }) {
+  const client = requireSupabase()
+  const { data, error } = await client.rpc('admin_save_controls', {
+    p_hours: hours,
+    p_services: services,
+  })
+  if (error) throwQueueOperationError(error)
+  return data
+}
+
 export async function fetchPublicQueue() {
   const client = requireSupabase()
   const { data, error } = await client.rpc('get_public_queue')

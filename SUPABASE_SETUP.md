@@ -2,9 +2,15 @@
 
 ## Estado de aplicação
 
-As migrations `202610140001_safe_queue_rpc.sql` e `202610140002_admin_start_next_service.sql` já existiam no projeto. As migrations `202610140003_mercado_pago_pix.sql` e `202610140004_queue_concurrency_notifications.sql` estão no repositório; este workspace não confirma o estado remoto. Verifique no projeto Supabase se ambas foram aplicadas antes de publicar as funções.
+As migrations `202610140001_safe_queue_rpc.sql` e `202610140002_admin_start_next_service.sql` já existiam no projeto. As migrations `202610140003_mercado_pago_pix.sql`, `202610140004_queue_concurrency_notifications.sql` e `202611120001_admin_controls.sql` estão no repositório; este workspace não confirma o estado remoto. Verifique no projeto Supabase se elas foram aplicadas antes de publicar as funções.
 
-Ela altera somente colunas e funções de `payment_transactions`, `queue_entries`, `clients` e `services` já existentes. Não cria tabelas nem muda políticas RLS. As RPCs de cobrança e consulta são concedidas exclusivamente à role interna `service_role`.
+A migration `202610140003_mercado_pago_pix.sql` altera somente colunas e funções de `payment_transactions`, `queue_entries`, `clients` e `services` já existentes. Não cria tabelas nem muda políticas RLS. As RPCs de cobrança e consulta são concedidas exclusivamente à role interna `service_role`.
+
+## Controle do proprietário
+
+A migration `202611120001_admin_controls.sql` cria os horários de funcionamento e RPCs protegidas para consultar e salvar as configurações do painel. Aplique-a pelo SQL Editor do Supabase antes de abrir `/admin/controle`. O painel permite editar dias e horários, nome, duração, preço e disponibilidade dos serviços. Alterações de nome/duração/preço atualizam quem ainda está aguardando; atendimentos em andamento e registros históricos preservam seus snapshots.
+
+Para aplicar, abra a migration inteira no SQL Editor e execute-a uma vez. Ela não precisa de secrets nem de deploy de Edge Function.
 
 ## Secrets das Edge Functions
 
