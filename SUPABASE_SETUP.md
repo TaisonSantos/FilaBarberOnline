@@ -2,13 +2,15 @@
 
 ## Estado de aplicação
 
-As migrations `202610140001_safe_queue_rpc.sql` e `202610140002_admin_start_next_service.sql` já existiam no projeto. As migrations `202610140003_mercado_pago_pix.sql`, `202610140004_queue_concurrency_notifications.sql` e `202611120001_admin_controls.sql` estão no repositório; este workspace não confirma o estado remoto. Verifique no projeto Supabase se elas foram aplicadas antes de publicar as funções.
+As migrations `202610140001_safe_queue_rpc.sql`, `202610140002_admin_start_next_service.sql`, `202610140003_mercado_pago_pix.sql`, `202610140004_queue_concurrency_notifications.sql` e `202611120001_admin_controls.sql` estão aplicadas no projeto Supabase. A auditoria remota aplicou também as migrations `20261116171552_mask_public_queue_names.sql`, `20261116171952_optimize_queue_and_rls_policies.sql` e `20261116172032_scope_public_services_policy.sql`; os arquivos correspondentes estão versionados em `supabase/migrations/`.
 
 A migration `202610140003_mercado_pago_pix.sql` altera somente colunas e funções de `payment_transactions`, `queue_entries`, `clients` e `services` já existentes. Não cria tabelas nem muda políticas RLS. As RPCs de cobrança e consulta são concedidas exclusivamente à role interna `service_role`.
 
 ## Controle do proprietário
 
 A migration `202611120001_admin_controls.sql` cria os horários de funcionamento e RPCs protegidas para consultar e salvar as configurações do painel. Aplique-a pelo SQL Editor do Supabase antes de abrir `/admin/controle`. O painel permite editar dias e horários, nome, duração, preço e disponibilidade dos serviços. Alterações de nome/duração/preço atualizam quem ainda está aguardando; atendimentos em andamento e registros históricos preservam seus snapshots.
+
+As migrations `20261116171552_mask_public_queue_names.sql`, `20261116171952_optimize_queue_and_rls_policies.sql` e `20261116172032_scope_public_services_policy.sql` mascaram nomes na fila pública, otimizam a policy do proprietário e adicionam o índice da chave estrangeira de serviço. Elas já estão aplicadas no projeto remoto. A primeira preserva a autorização da RPC.
 
 Para aplicar, abra a migration inteira no SQL Editor e execute-a uma vez. Ela não precisa de secrets nem de deploy de Edge Function.
 
@@ -55,11 +57,11 @@ O navegador envia nome, telefone, serviço, e-mail e identificadores aleatórios
 
 O Access Token nunca sai da Edge Function. Retries reaproveitam o identificador de solicitação e o mesmo `X-Idempotency-Key`; uma Order criada antes de um timeout pode ser recuperada pelo mesmo identificador. O webhook não confia no corpo como prova: valida HMAC, consulta a Order com o Access Token e confere referência, moeda, valor e status do pedido e do pagamento. Somente `processed`/`accredited`, com pagamento Pix de R$ 10 integral, libera `payment_pending` para `waiting`.
 
-O cliente pode consultar apenas seu próprio estado com o token do checkout. Nenhuma função pública devolve telefone, e-mail, chave Pix, transação ou nome de outro cliente. Pagamentos pendentes, falhos e expirados não entram na fila pública. O QR Code e o Pix copia e cola são mostrados ao pagador que fez a solicitação.
+O cliente pode consultar apenas seu próprio estado com o token do checkout. As funções públicas de pagamento não devolvem telefone, e-mail, chave Pix ou transação; a fila pública mostra somente o primeiro nome de cada cliente. Pagamentos pendentes, falhos e expirados não entram na fila pública. O QR Code e o Pix copia e cola são mostrados ao pagador que fez a solicitação.
 
 ## Teste manual depois da aplicação
 
-1. Configure a URL e a chave pública Supabase do frontend em `.env.local` (chave pública, não `service_role`). Esse arquivo está ignorado pelo Git.
+1. Configure `VITE_SUPABASE_URL` e `VITE_SUPABASE_KEY` em `.env.local`, usando a chave publishable pública do Supabase (não `service_role`). Esse arquivo está ignorado pelo Git. `VITE_SUPABASE_ANON_KEY` continua aceito para compatibilidade.
 2. Use a tela `/entrar-na-fila` com dados de teste e um serviço ativo.
 3. Confira a exibição do QR Code, Pix copia e cola e link do Mercado Pago.
 4. Em teste, use as credenciais e os dados predefinidos de teste do Mercado Pago; não use sua conta real como comprador. Para o fluxo Pix de teste da Orders API, use o comprador de teste indicado pelo Mercado Pago. O QR de teste não valida pagamento por um banco real.

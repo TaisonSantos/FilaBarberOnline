@@ -2,7 +2,7 @@ import { isSupabaseConfigured, supabase } from './supabase'
 
 function requireSupabase() {
   if (!isSupabaseConfigured || !supabase) {
-    throw new Error('Configure VITE_SUPABASE_URL e VITE_SUPABASE_KEY (ou VITE_SUPABASE_ANON_KEY) em .env.local.')
+    throw new Error('Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY (ou VITE_SUPABASE_KEY) em .env.local.')
   }
   return supabase
 }
@@ -55,6 +55,22 @@ export async function fetchPublicQueue() {
   const { data, error } = await client.rpc('get_public_queue')
   if (error) throw error
   return data ?? []
+}
+
+export async function fetchPublicOnlineEntryFee() {
+  const client = requireSupabase()
+  const { data, error } = await client.rpc('get_public_online_entry_fee')
+  if (error) throw error
+  return Number(data)
+}
+
+export async function saveOnlineEntryFee(entryFeeCents) {
+  const client = requireSupabase()
+  const { data, error } = await client.rpc('admin_save_online_entry_fee', {
+    p_entry_fee_cents: entryFeeCents,
+  })
+  if (error) throw error
+  return Number(data)
 }
 
 export async function fetchAdminQueue({ history = false } = {}) {

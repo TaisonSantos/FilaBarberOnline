@@ -2,9 +2,11 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const developmentOrigin = 'http://localhost:5173'
+const productionOrigin = 'https://fila-barber-online.vercel.app'
 
 const allowedOrigins = new Set([
   developmentOrigin,
+  productionOrigin,
   ...(Deno.env.get('FRONTEND_ORIGINS') ?? '')
     .split(',')
     .map((value) => value.trim())
@@ -202,11 +204,14 @@ Deno.serve(async (request) => {
     if (
       !intent ||
       typeof intent.payment_transaction_id !== 'string' ||
-      !uuidPattern.test(intent.payment_transaction_id)
+      !uuidPattern.test(intent.payment_transaction_id) ||
+      !Number.isInteger(intent.amount_cents) ||
+      intent.amount_cents < 1
     ) {
       throw new Error('A intenção de pagamento retornou dados inválidos.')
     }
 
+    const totalAmount = (intent.amount_cents / 100).toFixed(2)
     let order: Record<string, any>
 
     if (intent.provider_order_id) {
@@ -253,13 +258,13 @@ Deno.serve(async (request) => {
           },
           body: JSON.stringify({
             type: 'online',
-            total_amount: '10.00',
+            total_amount: totalAmount,
             external_reference: intent.payment_transaction_id,
             processing_mode: 'automatic',
             transactions: {
               payments: [
                 {
-                  amount: '10.00',
+                  amount: totalAmount,
                   payment_method: {
                     id: 'pix',
                     type: 'bank_transfer',
@@ -280,17 +285,42 @@ Deno.serve(async (request) => {
       order = await response.json().catch(() => ({}))
 
       if (!response.ok) {
+        const providerErrors = Array.isArray(order?.errors)
+          ? order.errors.map((item: Record<string, any>) => ({
+              code: item?.code,
+              message: item?.message,
+              description: item?.description,
+            }))
+          : undefined
+        const failedPayments = Array.isArray(order?.transactions?.payments)
+          ? order.transactions.payments.map((item: Record<string, any>) => ({
+              status: item?.status,
+              statusDetail: item?.status_detail,
+              paymentMethod: item?.payment_method?.id,
+              paymentType: item?.payment_method?.type,
+              error: item?.error,
+              errorMessage: item?.message,
+            }))
+          : undefined
+
         console.error('Mercado Pago order creation failed', {
           status: response.status,
           message: order?.message,
           error: order?.error,
           cause: order?.cause,
+          orderId: order?.id,
+          orderStatus: order?.status,
+          orderStatusDetail: order?.status_detail,
+          errors: providerErrors,
+          failedPayments,
         })
 
         return respond(
           {
             error:
               'Não foi possível criar o Pix. Consulte os logs para identificar o motivo.',
+            code: 'mercado_pago_order_failed',
+            providerStatus: response.status,
           },
           502,
         )
@@ -300,7 +330,7 @@ Deno.serve(async (request) => {
     if (
       !order.id ||
       order.external_reference !== intent.payment_transaction_id ||
-      Number(order.total_amount) !== 10
+      Number(order.total_amount) !== intent.amount_cents / 100
     ) {
       console.error('Mercado Pago order validation failed', {
         hasOrderId: Boolean(order.id),
@@ -375,7 +405,7 @@ Deno.serve(async (request) => {
       requestId,
       status: order.status,
       statusDetail: order.status_detail,
-      amountCents: 1000,
+      amountCents: intent.amount_cents,
       qrCode,
       qrCodeBase64,
       ticketUrl: typeof ticketUrl === 'string' ? ticketUrl : null,
