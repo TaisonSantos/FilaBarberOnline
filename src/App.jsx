@@ -106,6 +106,23 @@ const businessDays = [
     closes_at: "13:00",
   },
 ];
+function getSaoPauloTimeParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  const dayOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(
+    values.weekday
+  );
+  return {
+    dayOfWeek,
+    minuteOfDay: Number(values.hour) * 60 + Number(values.minute),
+  };
+}
 const demoQueue = [
   {
     id: 1,
@@ -283,6 +300,12 @@ function buildWhatsAppUrl(phone, message) {
 const formatWait = (minutes) => (minutes <= 0 ? "Sua vez" : `~ ${minutes} min`);
 const formatMoney = (cents) =>
   (cents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const onlineQueueTermsVersion = "queue-presence-v1-2026-11-19";
+const normalizeSearch = (value) =>
+  String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR");
 const onlineEntryProfileKey = "scbarber-last-online-entry-v1";
 const readLastOnlineEntry = () => {
   try {
@@ -295,9 +318,6 @@ const readLastOnlineEntry = () => {
       name: typeof profile.name === "string" ? profile.name : "",
       phone: typeof profile.phone === "string" ? profile.phone : "",
       email: typeof profile.email === "string" ? profile.email : "",
-      serviceId: typeof profile.serviceId === "string" ? profile.serviceId : "",
-      serviceName:
-        typeof profile.serviceName === "string" ? profile.serviceName : "",
     };
   } catch {
     return null;
@@ -824,18 +844,84 @@ function JoinQueue() {
   const { addCustomer } = useQueue();
   const pixPaymentRef = useRef(null);
   const pixQrRef = useRef(null);
+  const termsDialogRef = useRef(null);
+  const termsTitleRef = useRef(null);
+  const termsBackButtonRef = useRef(null);
   const [savedProfile, setSavedProfile] = useState(readLastOnlineEntry);
-  const [serviceOptions, setServiceOptions] = useState(services);
-  const [selected, setSelected] = useState(services[1].name);
+  const [serviceOptions, setServiceOptions] = useState(
+    isSupabaseConfigured ? [] : services
+  );
+  const [servicesLoading, setServicesLoading] = useState(isSupabaseConfigured);
+  const [businessHours, setBusinessHours] = useState(null);
+  const [businessHoursLoading, setBusinessHoursLoading] = useState(
+    isSupabaseConfigured
+  );
+  const [businessClock, setBusinessClock] = useState(() => new Date());
+  const [selected, setSelected] = useState("");
+  const [missingField, setMissingField] = useState("");
   const [name, setName] = useState(savedProfile?.name ?? "");
   const [phone, setPhone] = useState(savedProfile?.phone ?? "");
   const [email, setEmail] = useState(savedProfile?.email ?? "");
+  const nameInputRef = useRef(null);
+  const phoneInputRef = useRef(null);
+  const emailInputRef = useRef(null);
+  const servicePickerRef = useRef(null);
   const [message, setMessage] = useState("");
   const [payment, setPayment] = useState(null);
+  const [termsOpen, setTermsOpen] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
   const [onlineEntryFeeCents, setOnlineEntryFeeCents] = useState(100);
   const [submitting, setSubmitting] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState("");
   const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!isSupabaseConfigured) return undefined;
+    const timer = window.setInterval(() => setBusinessClock(new Date()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (!termsOpen) return undefined;
+    const frame = window.requestAnimationFrame(() => termsTitleRef.current?.focus());
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") {
+        setTermsOpen(false);
+        setTermsAccepted(false);
+      } else if (event.key === "Tab") {
+        const focusable = termsDialogRef.current?.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), [tabindex="0"]'
+        );
+        if (!focusable?.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (
+          event.shiftKey &&
+          (document.activeElement === first ||
+            document.activeElement === termsTitleRef.current)
+        ) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [termsOpen]);
+  useEffect(() => {
+    if (!termsOpen || !termsAccepted) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      termsBackButtonRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [termsOpen, termsAccepted]);
   useEffect(() => {
     if (!payment?.requestId) return undefined;
     const frame = window.requestAnimationFrame(() => {
@@ -849,8 +935,12 @@ function JoinQueue() {
   useEffect(() => {
     if (!isSupabaseConfigured) return undefined;
     let active = true;
-    Promise.all([fetchActiveServices(), fetchPublicOnlineEntryFee()])
-      .then(([items, feeCents]) => {
+    Promise.all([
+      fetchActiveServices(),
+      fetchPublicOnlineEntryFee(),
+      fetchPublicBusinessHours(),
+    ])
+      .then(([items, feeCents, hours]) => {
         if (!active) return;
         const mapped = items.map((item) => ({
           id: item.id,
@@ -859,15 +949,19 @@ function JoinQueue() {
           price_cents: item.price_cents,
         }));
         setServiceOptions(mapped);
-        const previousService = mapped.find(
-          (item) => item.id === savedProfile?.serviceId
-        );
-        setSelected(previousService?.name ?? mapped[0]?.name ?? "");
+        setSelected("");
+        setBusinessHours(hours);
         if (Number.isInteger(feeCents) && feeCents > 0)
           setOnlineEntryFeeCents(feeCents);
       })
       .catch((loadError) => {
         if (active) setMessage(loadError.message);
+      })
+      .finally(() => {
+        if (active) {
+          setServicesLoading(false);
+          setBusinessHoursLoading(false);
+        }
       });
     return () => {
       active = false;
@@ -953,14 +1047,78 @@ function JoinQueue() {
   const join = async (event) => {
     event.preventDefault();
     setMessage("");
-    if (!name.trim() || !phone.trim() || !email.trim()) {
-      setMessage("Preencha nome, telefone e e-mail.");
+    if (isSupabaseConfigured && !isBusinessOpen) {
+      setMessage(
+        businessHours
+          ? "A barbearia está fechada. Você poderá entrar na fila durante o horário de funcionamento."
+          : "Não foi possível confirmar o horário de funcionamento. Tente novamente mais tarde."
+      );
+      return;
+    }
+    const normalizedPhone = phone.replace(/\D/g, "");
+    const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    const missing = [
+      {
+        field: "name",
+        invalid: !name.trim(),
+        text: "Informe seu nome para continuar.",
+        ref: nameInputRef,
+      },
+      {
+        field: "name",
+        invalid: Boolean(name.trim()) && name.trim().length < 2,
+        text: "Digite seu nome com pelo menos 2 caracteres.",
+        ref: nameInputRef,
+      },
+      {
+        field: "phone",
+        invalid: !phone.trim(),
+        text: "Informe seu telefone para continuar.",
+        ref: phoneInputRef,
+      },
+      {
+        field: "phone",
+        invalid: Boolean(phone.trim()) && (normalizedPhone.length < 10 || normalizedPhone.length > 13),
+        text: "Confira o telefone. Informe DDD e número.",
+        ref: phoneInputRef,
+      },
+      {
+        field: "email",
+        invalid: !email.trim(),
+        text: "Informe seu e-mail para gerar o Pix.",
+        ref: emailInputRef,
+      },
+      {
+        field: "email",
+        invalid: Boolean(email.trim()) && !emailLooksValid,
+        text: "Digite um e-mail válido para gerar o Pix.",
+        ref: emailInputRef,
+      },
+      {
+        field: "service",
+        invalid: !selected,
+        text: "Selecione o serviço nos botões abaixo para continuar.",
+        ref: servicePickerRef,
+      },
+    ].find((item) => item.invalid);
+    if (missing) {
+      setMissingField(missing.field);
+      setMessage(missing.text);
+      window.requestAnimationFrame(() => {
+        const target =
+          missing.field === "service"
+            ? missing.ref.current?.querySelector('input[type="radio"]') ??
+              missing.ref.current
+            : missing.ref.current;
+        target?.focus();
+        missing.ref.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
       return;
     }
     if (!isSupabaseConfigured) {
       addCustomer({
         name: name.trim(),
-        phone: phone.replace(/\D/g, ""),
+        phone: normalizedPhone,
         service: selected,
         source: "Online",
       });
@@ -969,12 +1127,32 @@ function JoinQueue() {
       );
       return;
     }
+    setTermsAccepted(false);
+    setTermsOpen(true);
+  };
+  const generatePixAfterTermsAcceptance = async () => {
+    if (!termsAccepted) return;
+    setMessage("");
+    if (!isBusinessOpen) {
+      setTermsOpen(false);
+      setMessage(
+        "A barbearia está fechada. Você poderá gerar o Pix durante o horário de funcionamento."
+      );
+      return;
+    }
     const service = serviceOptions.find((item) => item.name === selected);
     if (!service?.id) {
-      setMessage("Selecione um serviço ativo para continuar.");
+      setTermsOpen(false);
+      setMissingField("service");
+      setMessage("Selecione um serviço para continuar.");
+      window.requestAnimationFrame(() => {
+        servicePickerRef.current?.querySelector('input[type="radio"]')?.focus();
+        servicePickerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
       return;
     }
     setSubmitting(true);
+    setTermsOpen(false);
     try {
       const requestKey = "barber-pix-checkout-v1";
       const checkoutData = {
@@ -1007,12 +1185,18 @@ function JoinQueue() {
         ...checkoutData,
         requestId,
         checkoutToken,
+        termsAccepted: true,
+        termsVersion: onlineQueueTermsVersion,
       });
       setPayment({
         ...result,
         requestId,
         checkoutToken,
-        customerProfile: { ...checkoutData, serviceName: service.name },
+        customerProfile: {
+          name: checkoutData.name,
+          phone: checkoutData.phone,
+          email: checkoutData.email,
+        },
       });
       setPaymentStatus(
         result.status === "processed"
@@ -1028,6 +1212,31 @@ function JoinQueue() {
       setSubmitting(false);
     }
   };
+  const clearMissingField = (field) => {
+    if (missingField === field) {
+      setMissingField("");
+      setMessage("");
+    }
+  };
+  const { dayOfWeek, minuteOfDay } = getSaoPauloTimeParts(businessClock);
+  const todaysHours = businessHours?.find(
+    (day) => Number(day.day_of_week) === dayOfWeek
+  );
+  const opensAt = todaysHours?.opens_at
+    ? Number(todaysHours.opens_at.slice(0, 2)) * 60 +
+      Number(todaysHours.opens_at.slice(3, 5))
+    : null;
+  const closesAt = todaysHours?.closes_at
+    ? Number(todaysHours.closes_at.slice(0, 2)) * 60 +
+      Number(todaysHours.closes_at.slice(3, 5))
+    : null;
+  const isBusinessOpen = Boolean(
+    todaysHours?.is_open &&
+      opensAt !== null &&
+      closesAt !== null &&
+      minuteOfDay >= opensAt &&
+      minuteOfDay < closesAt
+  );
   const copyPixCode = async () => {
     if (!payment?.qrCode) return;
     await navigator.clipboard.writeText(payment.qrCode);
@@ -1095,58 +1304,109 @@ function JoinQueue() {
             "Após a entrada ser confirmada, seus dados ficam salvos neste aparelho para facilitar a próxima vez."
           )}
         </p>
-        <form onSubmit={join}>
-          <label className="field-label">
+        <form onSubmit={join} noValidate>
+          <label className={`field-label ${missingField === "name" ? "has-error" : ""}`}>
             Nome
             <input
+              ref={nameInputRef}
               value={name}
-              onChange={(event) => setName(event.target.value)}
+              aria-invalid={missingField === "name"}
+              onChange={(event) => {
+                setName(event.target.value);
+                clearMissingField("name");
+              }}
               placeholder="Seu nome"
-              required
             />
           </label>
-          <label className="field-label">
+          <label className={`field-label ${missingField === "phone" ? "has-error" : ""}`}>
             Telefone
             <input
+              ref={phoneInputRef}
               value={phone}
-              onChange={(event) => setPhone(event.target.value)}
+              aria-invalid={missingField === "phone"}
+              onChange={(event) => {
+                setPhone(event.target.value);
+                clearMissingField("phone");
+              }}
               placeholder="(71) 99999-9999"
               inputMode="tel"
               autoComplete="tel"
-              required
             />
           </label>
-          <label className="field-label">
+          <label className={`field-label ${missingField === "email" ? "has-error" : ""}`}>
             E-mail para o pagamento
             <input
+              ref={emailInputRef}
               type="email"
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              aria-invalid={missingField === "email"}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                clearMissingField("email");
+              }}
               placeholder="voce@email.com"
               autoComplete="email"
-              required
             />
             <small className="field-help">
               Necessário para gerar o Pix pelo Mercado Pago.
             </small>
           </label>
-          <label className="field-label">
-            Serviço
-            <select
-              value={selected}
-              onChange={(event) => setSelected(event.target.value)}
-              required
+          <div
+            className={`service-picker ${missingField === "service" ? "has-error" : ""}`}
+            ref={servicePickerRef}
+            tabIndex={-1}
+          >
+            <span className="field-label">Escolha o serviço</span>
+            <div
+              className="service-list"
+              role="radiogroup"
+              aria-label="Escolha o serviço"
+              aria-required="true"
+              aria-invalid={missingField === "service"}
             >
-              {serviceOptions.map((service) => (
-                <option key={service.id ?? service.name} value={service.name}>
-                  {service.name} · {service.duration} min
-                  {service.price_cents != null
-                    ? ` · ${formatMoney(service.price_cents)}`
-                    : ""}
-                </option>
-              ))}
-            </select>
-          </label>
+              {servicesLoading ? (
+                <p className="service-picker-empty">Carregando serviços…</p>
+              ) : serviceOptions.length ? (
+                serviceOptions.map((service) => (
+                  <label
+                    className={`service-option ${
+                      selected === service.name ? "selected" : ""
+                    }`}
+                    key={service.id ?? service.name}
+                  >
+                    <input
+                      className="service-option-radio"
+                      type="radio"
+                      name="online-service"
+                      value={service.name}
+                      checked={selected === service.name}
+                      onChange={() => {
+                        setSelected(service.name);
+                        setMissingField("");
+                        setMessage("");
+                      }}
+                    />
+                    <span className="service-option-copy">
+                      <strong>{service.name}</strong>
+                      <small>
+                        {service.duration} min
+                        {service.price_cents != null
+                          ? ` · ${formatMoney(service.price_cents)}`
+                          : ""}
+                      </small>
+                    </span>
+                    {selected === service.name && (
+                      <Check size={18} aria-hidden="true" />
+                    )}
+                  </label>
+                ))
+              ) : (
+                <p className="service-picker-empty">
+                  Nenhum serviço disponível no momento.
+                </p>
+              )}
+            </div>
+          </div>
           <div className="entry-fee">
             <span>Entrada online</span>
             <strong>{formatMoney(onlineEntryFeeCents)}</strong>
@@ -1157,19 +1417,47 @@ function JoinQueue() {
                 : "Na prévia, nenhum pagamento é processado."}
             </small>
           </div>
+          {isSupabaseConfigured && (
+            <p className={`entry-hours-status ${isBusinessOpen ? "is-open" : "is-closed"}`}>
+              {businessHoursLoading
+                ? "Verificando horário de funcionamento…"
+                : isBusinessOpen
+                ? `Barbearia aberta até ${todaysHours.closes_at.slice(0, 5)}.`
+                : !todaysHours
+                ? "Não foi possível confirmar o horário. A entrada online está bloqueada."
+                : todaysHours?.is_open && todaysHours.opens_at
+                ? `Barbearia fechada agora. Atendimento hoje das ${todaysHours.opens_at.slice(0, 5)} às ${todaysHours.closes_at.slice(0, 5)}.`
+                : "Barbearia fechada hoje. Não é possível entrar na fila online."}
+            </p>
+          )}
           <button
             type="submit"
             className="primary-button"
-            disabled={submitting || payment?.status === "paid"}
+            disabled={
+              submitting ||
+              servicesLoading ||
+              (isSupabaseConfigured && (businessHoursLoading || !isBusinessOpen)) ||
+              payment?.status === "paid"
+            }
           >
-            {submitting
+            {servicesLoading
+              ? "Carregando serviços…"
+              : businessHoursLoading
+              ? "Verificando horário…"
+              : isSupabaseConfigured && !isBusinessOpen
+              ? "Fila online fechada"
+              : submitting
               ? "Preparando Pix…"
               : isSupabaseConfigured
               ? "Gerar Pix"
               : "Simular entrada na fila"}
           </button>
         </form>
-        {message && <div className="form-message">{message}</div>}
+        {message && (
+          <div className="form-message" role="alert" aria-live="polite">
+            {message}
+          </div>
+        )}
         {payment && (
           <section
             className="pix-payment"
@@ -1235,6 +1523,74 @@ function JoinQueue() {
           </section>
         )}
       </section>
+      {termsOpen && (
+        <div
+          className="queue-terms-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setTermsOpen(false);
+              setTermsAccepted(false);
+            }
+          }}
+        >
+          <section
+            className="queue-terms-dialog"
+            ref={termsDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="queue-terms-title"
+            aria-describedby="queue-terms-description"
+          >
+            <span className="overline">ANTES DE GERAR O PIX</span>
+            <h2 id="queue-terms-title" ref={termsTitleRef} tabIndex={-1}>
+              Termo de responsabilidade da entrada online
+            </h2>
+            <div className="queue-terms-copy" id="queue-terms-description">
+              <p>
+                A entrada online de <strong>{formatMoney(onlineEntryFeeCents)}</strong> será abatida do valor final do serviço. Ela não representa o pagamento integral do corte.
+              </p>
+              <p>
+                Devo estar presente na barbearia quando minha vez for chamada. Se eu não estiver, perderei minha vez e o valor da entrada não será reembolsado, exceto quando a legislação aplicável determinar o contrário.
+              </p>
+              <p>
+                Minha posição só será confirmada depois que o pagamento for aprovado. Os tempos de espera exibidos são estimativas e podem mudar conforme os atendimentos.
+              </p>
+              <p className="queue-terms-legal-note">
+                Este termo não elimina direitos garantidos pela legislação de defesa do consumidor.
+              </p>
+            </div>
+            <label className="queue-terms-accept">
+              <input
+                type="checkbox"
+                checked={termsAccepted}
+                onChange={(event) => setTermsAccepted(event.target.checked)}
+              />
+              <span>Li e aceito o termo de responsabilidade acima.</span>
+            </label>
+            <div className="queue-terms-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                ref={termsBackButtonRef}
+                onClick={() => {
+                  setTermsOpen(false);
+                  setTermsAccepted(false);
+                }}
+              >
+                Voltar
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!termsAccepted || submitting}
+                onClick={() => void generatePixAfterTermsAcceptance()}
+              >
+                {submitting ? "Preparando Pix…" : "Aceitar e gerar Pix"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -1814,20 +2170,41 @@ function LiveWalkInForm({ servicesList, onAdded }) {
           required
         />
       </label>
-      <label className="field-label">
-        Serviço
-        <select
-          value={serviceId}
-          onChange={(event) => setServiceId(event.target.value)}
-          required
+      <div className="service-picker walkin-service-picker">
+        <span className="field-label">Escolha o serviço</span>
+        <div
+          className="service-list"
+          role="radiogroup"
+          aria-label="Escolha o serviço para a entrada presencial"
+          aria-required="true"
         >
           {servicesList.map((service) => (
-            <option key={service.id} value={service.id}>
-              {service.name} · {service.duration_minutes} min
-            </option>
+            <label
+              className={`service-option ${serviceId === service.id ? "selected" : ""}`}
+              key={service.id}
+            >
+              <input
+                className="service-option-radio"
+                type="radio"
+                name="walkin-service"
+                value={service.id}
+                checked={serviceId === service.id}
+                onChange={() => setServiceId(service.id)}
+              />
+              <span className="service-option-copy">
+                <strong>{service.name}</strong>
+                <small>
+                  {service.duration_minutes} min · {formatMoney(service.price_cents)}
+                </small>
+              </span>
+              {serviceId === service.id && <Check size={18} aria-hidden="true" />}
+            </label>
           ))}
-        </select>
-      </label>
+          {!servicesList.length && (
+            <p className="service-picker-empty">Cadastre um serviço para adicionar clientes.</p>
+          )}
+        </div>
+      </div>
       <div className="walkin-free">
         Entrada presencial <strong>R$ 0,00</strong>
       </div>
@@ -1914,6 +2291,7 @@ function LiveAdminDashboard({ history, email, onSignOut, signOutError }) {
   const [queue, setQueue] = useState([]);
   const [servicesList, setServicesList] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [clientNameFilter, setClientNameFilter] = useState("");
   const [serviceFilter, setServiceFilter] = useState("");
   const [period, setPeriod] = useState("Mês");
   const [dateFrom, setDateFrom] = useState(monthStartValue);
@@ -1991,7 +2369,11 @@ function LiveAdminDashboard({ history, email, onSignOut, signOutError }) {
   };
   if (history) {
     const today = new Date();
+    const normalizedClientName = normalizeSearch(clientNameFilter.trim());
     const filtered = queue.filter((entry) => {
+      const clientName = normalizeSearch(entry.client?.name);
+      const matchesClient =
+        !normalizedClientName || clientName.includes(normalizedClientName);
       const matchesService =
         !serviceFilter || entry.service_id === serviceFilter;
       const date = new Date(entry.completed_at || entry.created_at);
@@ -2005,7 +2387,7 @@ function LiveAdminDashboard({ history, email, onSignOut, signOutError }) {
           ? date.getMonth() === today.getMonth() &&
             date.getFullYear() === today.getFullYear()
           : date.getFullYear() === today.getFullYear();
-      return matchesService && matchesPeriod;
+      return matchesClient && matchesService && matchesPeriod;
     });
     const completed = filtered.filter((entry) => entry.status === "completed");
     const serviceTotal = completed.reduce(
@@ -2086,20 +2468,32 @@ function LiveAdminDashboard({ history, email, onSignOut, signOutError }) {
               />
             </label>
           </div>
-          <label className="field-label">
-            Filtrar por serviço
-            <select
-              value={serviceFilter}
-              onChange={(event) => setServiceFilter(event.target.value)}
-            >
-              <option value="">Todos os serviços</option>
-              {servicesList.map((service) => (
-                <option key={service.id} value={service.id}>
-                  {service.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="history-filter-grid">
+            <label className="field-label">
+              Buscar cliente
+              <input
+                type="search"
+                value={clientNameFilter}
+                onChange={(event) => setClientNameFilter(event.target.value)}
+                placeholder="Digite o nome do cliente"
+                autoComplete="off"
+              />
+            </label>
+            <label className="field-label">
+              Filtrar por serviço
+              <select
+                value={serviceFilter}
+                onChange={(event) => setServiceFilter(event.target.value)}
+              >
+                <option value="">Todos os serviços</option>
+                {servicesList.map((service) => (
+                  <option key={service.id} value={service.id}>
+                    {service.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="history-stats">
             <div>
               <span>Cortes realizados</span>
@@ -2387,19 +2781,36 @@ function AddWalkIn({ onAdd }) {
           required
         />
       </label>
-      <label className="field-label">
-        Serviço
-        <select
-          value={service}
-          onChange={(event) => setService(event.target.value)}
+      <div className="service-picker walkin-service-picker">
+        <span className="field-label">Escolha o serviço</span>
+        <div
+          className="service-list"
+          role="radiogroup"
+          aria-label="Escolha o serviço para a entrada presencial"
+          aria-required="true"
         >
           {services.map((item) => (
-            <option key={item.name} value={item.name}>
-              {item.name}
-            </option>
+            <label
+              className={`service-option ${service === item.name ? "selected" : ""}`}
+              key={item.name}
+            >
+              <input
+                className="service-option-radio"
+                type="radio"
+                name="demo-walkin-service"
+                value={item.name}
+                checked={service === item.name}
+                onChange={() => setService(item.name)}
+              />
+              <span className="service-option-copy">
+                <strong>{item.name}</strong>
+                <small>{item.duration} min</small>
+              </span>
+              {service === item.name && <Check size={18} aria-hidden="true" />}
+            </label>
           ))}
-        </select>
-      </label>
+        </div>
+      </div>
       <div className="walkin-free">
         Entrada presencial <strong>R$ 0,00</strong>
       </div>
@@ -2578,8 +2989,13 @@ function HistoryPage() {
   const [dateFrom, setDateFrom] = useState(monthStartValue);
   const [dateTo, setDateTo] = useState(() => toDateInputValue(new Date()));
   const [service, setService] = useState("");
+  const [clientNameFilter, setClientNameFilter] = useState("");
+  const normalizedClientName = normalizeSearch(clientNameFilter.trim());
   const today = new Date();
   const filtered = completed.filter((item) => {
+    const matchesClient =
+      !normalizedClientName ||
+      normalizeSearch(item.name).includes(normalizedClientName);
     const date = new Date(item.createdAt || Date.now());
     const dateValue = toDateInputValue(date);
     const matchesPeriod =
@@ -2591,7 +3007,11 @@ function HistoryPage() {
         ? date.getMonth() === today.getMonth() &&
           date.getFullYear() === today.getFullYear()
         : date.getFullYear() === today.getFullYear();
-    return (!service || item.service === service) && matchesPeriod;
+    return (
+      matchesClient &&
+      (!service || item.service === service) &&
+      matchesPeriod
+    );
   });
   const totalAmount = filtered.reduce(
     (sum, item) => sum + (item.amountCents || 0),
@@ -2654,18 +3074,30 @@ function HistoryPage() {
             />
           </label>
         </div>
-        <label className="field-label">
-          Filtrar por serviço
-          <select
-            value={service}
-            onChange={(event) => setService(event.target.value)}
-          >
-            <option value="">Todos os serviços</option>
-            {services.map((item) => (
-              <option key={item.name}>{item.name}</option>
-            ))}
-          </select>
-        </label>
+        <div className="history-filter-grid">
+          <label className="field-label">
+            Buscar cliente
+            <input
+              type="search"
+              value={clientNameFilter}
+              onChange={(event) => setClientNameFilter(event.target.value)}
+              placeholder="Digite o nome do cliente"
+              autoComplete="off"
+            />
+          </label>
+          <label className="field-label">
+            Filtrar por serviço
+            <select
+              value={service}
+              onChange={(event) => setService(event.target.value)}
+            >
+              <option value="">Todos os serviços</option>
+              {services.map((item) => (
+                <option key={item.name}>{item.name}</option>
+              ))}
+            </select>
+          </label>
+        </div>
         <div className="history-stats">
           <div>
             <span>Cortes realizados</span>

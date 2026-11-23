@@ -154,7 +154,14 @@ export async function startNextService() {
 export async function createPixOrder(payload) {
   const client = requireSupabase()
   const { data, error } = await client.functions.invoke('create-pix-order', { body: payload })
-  if (error) throw error
+  if (error) {
+    let body
+    try {
+      body = await error.context?.json()
+    } catch {}
+    if (body?.error) throw new Error(body.error)
+    throw error
+  }
   if (data?.error) throw new Error(data.error)
   return data
 }

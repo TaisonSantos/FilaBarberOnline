@@ -3,6 +3,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const developmentOrigin = 'http://localhost:5173'
 const productionOrigin = 'https://fila-barber-online.vercel.app'
+const onlineQueueTermsVersion = 'queue-presence-v1-2026-11-19'
 
 const allowedOrigins = new Set([
   developmentOrigin,
@@ -125,6 +126,8 @@ Deno.serve(async (request) => {
       serviceId,
       requestId,
       checkoutToken,
+      termsAccepted,
+      termsVersion,
     } = body ?? {}
 
     const normalizedName =
@@ -147,13 +150,17 @@ Deno.serve(async (request) => {
       !uuidPattern.test(requestId) ||
       typeof checkoutToken !== 'string' ||
       !/^[0-9a-f]{64}$/i.test(checkoutToken) ||
+      termsAccepted !== true ||
+      termsVersion !== onlineQueueTermsVersion ||
       normalizedEmail.length > 254 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
     ) {
       return respond(
         {
           error:
-            'Confira nome, telefone, serviço, e-mail e tente novamente.',
+            termsAccepted !== true || termsVersion !== onlineQueueTermsVersion
+              ? 'Leia e aceite o termo de responsabilidade antes de gerar o Pix.'
+              : 'Confira nome, telefone, serviço, e-mail e tente novamente.',
         },
         400,
       )
@@ -175,7 +182,7 @@ Deno.serve(async (request) => {
       : null
 
     const { data: intent, error: intentError } = await supabase.rpc(
-      'create_online_payment_intent',
+      'create_online_payment_intent_with_terms',
       {
         p_request_id: requestId,
         p_token_hash: tokenHash,
@@ -185,11 +192,16 @@ Deno.serve(async (request) => {
         p_payer_email: normalizedEmail,
         p_contact_hash: contactHash,
         p_ip_hash: ipHash,
+        p_terms_version: termsVersion,
       },
     )
 
     if (intentError?.code === 'P0001') {
       return respond({ error: intentError.message }, 429)
+    }
+
+    if (intentError?.code === '55000') {
+      return respond({ error: intentError.message }, 409)
     }
 
     if (intentError) {
